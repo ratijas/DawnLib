@@ -25,43 +25,61 @@ public class TagSourceGenerator : ISourceGenerator
             return;
         }
 
-        GeneratedClass @class = new GeneratedClass(Visibility.Public, "Tags") // todo: e.g. MeltdownTags
+        var @class = new GeneratedClass(Visibility.Public, "Tags") // todo: e.g. MeltdownTags
         {
             IsPartial = true,
             IsStatic = true,
             Attributes = { DawnLibSourceGenConstants.CodeGenAttribute }
         };
 
-        foreach (AdditionalText? additionalFile in context.AdditionalFiles)
+        foreach (var additionalFile in context.AdditionalFiles)
         {
             if (additionalFile == null)
                 continue;
 
-            if (!additionalFile.Path.EndsWith("tag.json"))
+            var path = additionalFile.Path;
+            if (path == null || !additionalFile.Path.EndsWith("tag.json"))
                 continue;
 
-            SourceText? text = additionalFile.GetText();
+            var text = additionalFile.GetText();
             if (text == null)
                 continue;
 
             string fieldName = Path.GetFileName(additionalFile.Path).Split('.')[0];
             fieldName = string.Join("", fieldName.Split('_').Select(it => it.ToCapitalized()));
 
-            TagDefinition definition = JsonConvert.DeserializeObject<TagDefinition>(text.ToString())!;
+            TagDefinition? definition;
+            try
+            {
+                definition = JsonConvert.DeserializeObject<TagDefinition>(text.ToString());
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (definition == null)
+                continue;
+
             string[] parts = definition.Tag.Split(':');
-            GeneratedField field = new GeneratedField(Visibility.Public, "NamespacedKey", fieldName)
+            GeneratedField field = new(Visibility.Public, "NamespacedKey", fieldName)
             {
                 IsStatic = true
             };
 
-            if (parts[0] == "lethal_company")
+            if (parts.Length >= 2 && parts[0] == "lethal_company")
             {
                 field.Value = $"NamespacedKey.Vanilla(\"{parts[1]}\")";
             }
-            else
+            else if (parts.Length >= 2)
             {
                 field.Value = $"NamespacedKey.From(\"{parts[0]}\", \"{parts[1]}\")";
             }
+            else
+            {
+                continue;
+            }
+
             @class.Members.Add(field);
         }
 
@@ -71,14 +89,14 @@ public class TagSourceGenerator : ISourceGenerator
             return;
         }
 
-        GeneratedCodeFile file = new GeneratedCodeFile()
+        var file = new GeneratedCodeFile()
         {
             Namespace = rootNamespace,
             Usings = ["Dawn"],
             Symbols = [@class]
         };
 
-        FileWriterVisitor visitor = new FileWriterVisitor();
+        var visitor = new FileWriterVisitor();
         visitor.Accept(file);
 
         context.AddSource($"{@class.Name}.g.cs", SourceText.From(visitor.ToString(), Encoding.UTF8));

@@ -7,6 +7,7 @@ using Microsoft.CodeAnalysis.Text;
 using Newtonsoft.Json;
 
 namespace Dawn.SourceGen;
+
 [Generator]
 public class KeyCollectionSourceGenerator : ISourceGenerator
 {
@@ -25,24 +26,36 @@ public class KeyCollectionSourceGenerator : ISourceGenerator
 
         List<string> alreadyGenerated = [];
 
-        foreach (AdditionalText? additionalFile in context.AdditionalFiles)
+        foreach (var additionalFile in context.AdditionalFiles)
         {
             if (additionalFile == null)
                 continue;
 
-            if (!additionalFile.Path.EndsWith("namespaced_keys.json"))
+            var path = additionalFile.Path;
+            if (path == null || !path.EndsWith("namespaced_keys.json"))
                 continue;
 
-            SourceText? text = additionalFile.GetText();
+            var text = additionalFile.GetText();
             if (text == null)
                 continue;
 
-            Dictionary<string, Dictionary<string, string>> definitions = JsonConvert.DeserializeObject<Dictionary<string, Dictionary<string, string>>>(text.ToString())!;
+            Dictionary<string, Dictionary<string, string>>? definitions;
+            try
+            {
+                definitions = JsonConvert.DeserializeObject<Dictionary<string, Dictionary<string, string>>>(text.ToString());
+            }
+            catch
+            {
+                continue;
+            }
 
-            foreach (string className in definitions.Keys)
+            if (definitions == null)
+                continue;
+
+            foreach (var className in definitions.Keys)
             {
                 Dictionary<string, string> values = definitions[className];
-                GeneratedClass @class = new GeneratedClass(Visibility.Public, className)
+                var @class = new GeneratedClass(Visibility.Public, className)
                 {
                     IsStatic = true,
                     IsPartial = true
@@ -54,7 +67,7 @@ public class KeyCollectionSourceGenerator : ISourceGenerator
                     if (value.Key == "__type") continue;
                     string[] parts = value.Value.Split(':');
 
-                    GeneratedField field = new GeneratedField(Visibility.Public, type, value.Key)
+                    var field = new GeneratedField(Visibility.Public, type, value.Key)
                     {
                         IsStatic = true
                     };
@@ -72,7 +85,7 @@ public class KeyCollectionSourceGenerator : ISourceGenerator
 
                 if (!alreadyGenerated.Contains(@class.Name))
                 {
-                    GeneratedMethod getReflectionMethod = new GeneratedMethod(Visibility.Public, $"{type}?", "GetByReflection")
+                    var getReflectionMethod = new GeneratedMethod(Visibility.Public, $"{type}?", "GetByReflection")
                     {
                         IsStatic = true,
                         Params = ["string name"],
@@ -85,18 +98,19 @@ public class KeyCollectionSourceGenerator : ISourceGenerator
                     @class.Attributes.Add(DawnLibSourceGenConstants.CodeGenAttribute);
                 }
 
-                GeneratedCodeFile file = new GeneratedCodeFile()
+                var file = new GeneratedCodeFile()
                 {
                     Namespace = rootNamespace,
                     Usings = ["Dawn"],
                     Symbols = [@class]
                 };
 
-                FileWriterVisitor visitor = new FileWriterVisitor();
+                var visitor = new FileWriterVisitor();
                 visitor.Accept(file);
 
                 alreadyGenerated.Add(@class.Name);
-                context.AddSource($"{Path.GetFileNameWithoutExtension(additionalFile.Path).Split('.')[0]}.{className}.g.cs", SourceText.From(visitor.ToString(), Encoding.UTF8));
+                var fileName = $"{Path.GetFileNameWithoutExtension(path).Split('.')[0]}.{className}.g.cs";
+                context.AddSource(fileName, SourceText.From(visitor.ToString(), Encoding.UTF8));
             }
         }
     }
