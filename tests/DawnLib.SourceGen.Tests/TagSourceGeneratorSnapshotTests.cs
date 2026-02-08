@@ -1,16 +1,13 @@
-using Dawn.SourceGen;
 using Microsoft.CodeAnalysis.CSharp;
 using Dawn.SourceGen.Tests.Utils;
+using Microsoft.CodeAnalysis;
 
 namespace Dawn.SourceGen.Tests;
 
 public class TagSourceGeneratorSnapshotTests
 {
-    [Fact]
-    public Task VanillaTagTest()
-    {
-        // Use DawnLib/data/tags/cold.tag.json
-        var text = new InMemoryAdditionalText("some_test_filename.tag.json", """
+    // Use DawnLib/data/tags/cold.tag.json
+    static AdditionalText SomeTestTagFile => new InMemoryAdditionalText("some_test_filename.tag.json", """
 {
   "tag": "lethal_company:cold",
   "values": [
@@ -20,6 +17,10 @@ public class TagSourceGeneratorSnapshotTests
   ]
 }
 """);
+
+    [Fact]
+    public Task VanillaTagTest()
+    {
         var compilation = CSharpCompilation.Create(nameof(VanillaTagTest));
         var generator = new TagSourceGenerator();
 
@@ -30,7 +31,7 @@ public class TagSourceGeneratorSnapshotTests
         };
         var provider = new SimpleAnalyzerConfigOptionsProvider(new DictAnalyzerConfigOptions(globalValues));
         var driver = CSharpGeneratorDriver.Create(generator)
-            .AddAdditionalTexts([text])
+            .AddAdditionalTexts([SomeTestTagFile])
             .WithUpdatedAnalyzerConfigOptions(provider)
             .RunGenerators(compilation, TestContext.Current.CancellationToken);
         return Verify(driver, Settings.Instance);
@@ -42,6 +43,7 @@ public class TagSourceGeneratorSnapshotTests
         var compilation = CSharpCompilation.Create(nameof(DiagnosticDAWN001Test));
         var generator = new TagSourceGenerator();
         var driver = CSharpGeneratorDriver.Create(generator)
+            .AddAdditionalTexts([SomeTestTagFile])
             .RunGenerators(compilation, TestContext.Current.CancellationToken);
         return Verify(driver, Settings.Instance);
     }
