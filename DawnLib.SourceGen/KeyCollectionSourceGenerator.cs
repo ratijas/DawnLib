@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.IO;
 using System.Text;
 using Dawn.SourceGen.AST;
@@ -24,7 +25,7 @@ public class KeyCollectionSourceGenerator : ISourceGenerator
             return;
         }
 
-        List<string> alreadyGenerated = [];
+        var classesToGenerate = new Dictionary<string, ClassToGenerate>();
 
         foreach (var additionalFile in context.AdditionalFiles)
         {
@@ -55,63 +56,137 @@ public class KeyCollectionSourceGenerator : ISourceGenerator
             foreach (var className in definitions.Keys)
             {
                 Dictionary<string, string> values = definitions[className];
-                var @class = new GeneratedClass(Visibility.Public, className)
-                {
-                    IsStatic = true,
-                    IsPartial = true
-                };
                 string type = $"NamespacedKey<{values["__type"]}>";
+
+                var fieldsToGenerate = new List<FieldToGenerate>();
 
                 foreach (var value in values)
                 {
-                    if (value.Key == "__type") continue;
-                    string[] parts = value.Value.Split(':');
-
-                    var field = new GeneratedField(Visibility.Public, type, value.Key)
+                    var field = GetFieldToGenerate(type, value.Key, value.Value);
+                    if (field != null)
                     {
-                        IsStatic = true
-                    };
-
-                    if (parts[0] == "lethal_company")
-                    {
-                        field.Value = $"{type}.Vanilla(\"{parts[1]}\")";
+                        fieldsToGenerate.Add(field.Value);
                     }
-                    else
-                    {
-                        field.Value = $"{type}.From(\"{parts[0]}\", \"{parts[1]}\")";
-                    }
-                    @class.Members.Add(field);
                 }
 
-                if (!alreadyGenerated.Contains(@class.Name))
+                if (!classesToGenerate.TryGetValue(className, out var classToGenerate))
                 {
-                    var getReflectionMethod = new GeneratedMethod(Visibility.Public, $"{type}?", "GetByReflection")
+                    classToGenerate = new(className, type);
+                    classesToGenerate.Add(className, classToGenerate);
+                }
+                else
+                {
+                    // Duplicate class name found in different JSON files.
+                    // Ensure types in all definitions are the same.
+                    if (type != classToGenerate.Type)
                     {
-                        IsStatic = true,
-                        Params = ["string name"],
-                        Body =
-                        [
-                            $"return ({type}?)typeof({@class.Name}).GetField(name)?.GetValue(null);"
-                        ]
-                    };
-                    @class.Members.Add(getReflectionMethod);
-                    @class.Attributes.Add(DawnLibSourceGenConstants.CodeGenAttribute);
+                        // Maybe emit some diagnostic?
+                    }
                 }
 
-                var file = new GeneratedCodeFile()
-                {
-                    Namespace = rootNamespace,
-                    Usings = ["Dawn"],
-                    Symbols = [@class]
-                };
+                var fieldsFile = new FieldsFileToGenerate(path, classToGenerate, fieldsToGenerate.ToImmutableArray());
 
-                var visitor = new FileWriterVisitor();
-                visitor.Accept(file);
-
-                alreadyGenerated.Add(@class.Name);
-                var fileName = $"{Path.GetFileNameWithoutExtension(path).Split('.')[0]}.{className}.g.cs";
-                context.AddSource(fileName, SourceText.From(visitor.ToString(), Encoding.UTF8));
+                EmitFields(context, rootNamespace, fieldsFile);
             }
         }
+
+        foreach (var classToGenerate in classesToGenerate.Values)
+        {
+            EmitCodeGenAttributeAndMethods(context, rootNamespace, classToGenerate);
+        }
     }
+
+    static FieldToGenerate? GetFieldToGenerate(string type, string name, string value)
+    {
+        if (type == "__type")
+            return null;
+
+        string[] parts = value.Split(':');
+        if (parts.Length != 2)
+        {
+            // Maybe emit a diagnostic?
+            return null;
+        }
+
+        return new(type, name, parts[0], parts[1]);
+    }
+
+    static GeneratedClass CreateGeneratedClass(string className) =>
+        new(Visibility.Public, className)
+        {
+            IsStatic = true,
+            IsPartial = true,
+        };
+
+    static void EmitCodeGenAttributeAndMethods(GeneratorExecutionContext context, string rootNamespace, ClassToGenerate classToGenerate)
+    {
+        var className = classToGenerate.ClassName;
+        var type = classToGenerate.Type;
+        var @class = CreateGeneratedClass(className);
+        var getReflectionMethod = new GeneratedMethod(Visibility.Public, $"{type}?", "GetByReflection")
+        {
+            IsStatic = true,
+            Params = ["string name"],
+            Body =
+            [
+                $"return ({type}?)typeof({className}).GetField(name)?.GetValue(null);"
+            ]
+        };
+        @class.Members.Add(getReflectionMethod);
+        @class.Attributes.Add(DawnLibSourceGenConstants.CodeGenAttribute);
+
+        var file = new GeneratedCodeFile()
+        {
+            Namespace = rootNamespace,
+            Usings = ["Dawn"],
+            Symbols = [@class]
+        };
+
+        var visitor = new FileWriterVisitor();
+        visitor.Accept(file);
+
+        var fileName = $"{className}.g.cs";
+        context.AddSource(fileName, SourceText.From(visitor.ToString(), Encoding.UTF8));
+    }
+
+    static void EmitFields(GeneratorExecutionContext context, string rootNamespace, FieldsFileToGenerate data)
+    {
+        var className = data.Class.ClassName;
+        var @class = CreateGeneratedClass(className);
+        foreach (var f in data.Fields)
+        {
+            var field = new GeneratedField(Visibility.Public, f.Type, f.FieldName)
+            {
+                IsStatic = true
+            };
+
+            if (f.Namespace == "lethal_company")
+            {
+                field.Value = $"""{f.Type}.Vanilla("{f.Key}")""";
+            }
+            else
+            {
+                field.Value = $"""{f.Type}.From("{f.Namespace}", "{f.Key}")""";
+            }
+            @class.Members.Add(field);
+        }
+        var file = new GeneratedCodeFile()
+        {
+            Namespace = rootNamespace,
+            Usings = ["Dawn"],
+            Symbols = [@class]
+        };
+
+        var visitor = new FileWriterVisitor();
+        visitor.Accept(file);
+
+        var fileName = $"{Path.GetFileNameWithoutExtension(data.FilePath).Split('.')[0]}.{className}.g.cs";
+        context.AddSource(fileName, SourceText.From(visitor.ToString(), Encoding.UTF8));
+    }
+
+    record struct ClassToGenerate(string ClassName, string Type);
+
+    record struct FieldToGenerate(string Type, string FieldName, string Namespace, string Key);
+
+    record struct FieldsFileToGenerate(string FilePath, ClassToGenerate Class, ImmutableArray<FieldToGenerate> Fields);
 }
