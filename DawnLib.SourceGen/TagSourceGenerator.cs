@@ -1,4 +1,5 @@
-﻿using System.IO;
+﻿using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
 using Dawn.SourceGen.AST;
@@ -14,7 +15,29 @@ public class TagSourceGenerator : ISourceGenerator
 {
     public void Initialize(GeneratorInitializationContext context)
     {
+    }
 
+    void EmitCodeGenAttribute(GeneratorExecutionContext context, string rootNamespace)
+    {
+        var @class = new GeneratedClass(Visibility.Public, "Tags")
+        {
+            IsPartial = true,
+            IsStatic = true,
+            Attributes = { DawnLibSourceGenConstants.CodeGenAttribute }
+        };
+
+        var file = new GeneratedCodeFile()
+        {
+            Namespace = rootNamespace,
+            Usings = ["Dawn"],
+            Symbols = [@class]
+        };
+
+        var visitor = new FileWriterVisitor();
+        visitor.Accept(file);
+
+        var fileName = $"{@class.Name}.g.cs";
+        context.AddSource(fileName, SourceText.From(visitor.ToString(), Encoding.UTF8));
     }
 
     public void Execute(GeneratorExecutionContext context)
@@ -25,12 +48,7 @@ public class TagSourceGenerator : ISourceGenerator
             return;
         }
 
-        var @class = new GeneratedClass(Visibility.Public, "Tags") // todo: e.g. MeltdownTags
-        {
-            IsPartial = true,
-            IsStatic = true,
-            Attributes = { DawnLibSourceGenConstants.CodeGenAttribute }
-        };
+        List<TagToGenerate> tagsToGenerate = [];
 
         foreach (var additionalFile in context.AdditionalFiles)
         {
@@ -62,43 +80,59 @@ public class TagSourceGenerator : ISourceGenerator
                 continue;
 
             string[] parts = definition.Tag.Split(':');
-            GeneratedField field = new(Visibility.Public, "NamespacedKey", fieldName)
+            if (parts.Length != 2)
+            {
+                // Maybe emit a diagnostic?
+                continue;
+            }
+
+            tagsToGenerate.Add(new(fieldName, parts[0], parts[1]));
+        }
+
+        if (tagsToGenerate.Count != 0)
+        {
+            // Produce CodeGenAttribute only once, and only if there are any tags at all
+            EmitCodeGenAttribute(context, rootNamespace);
+        }
+
+        foreach (var tag in tagsToGenerate)
+        {
+            var @class = new GeneratedClass(Visibility.Public, "Tags")
+            {
+                IsPartial = true,
+                IsStatic = true,
+            };
+
+            GeneratedField field = new(Visibility.Public, "NamespacedKey", tag.FieldName)
             {
                 IsStatic = true
             };
 
-            if (parts.Length >= 2 && parts[0] == "lethal_company")
+            if (tag.Namespace == "lethal_company")
             {
-                field.Value = $"NamespacedKey.Vanilla(\"{parts[1]}\")";
-            }
-            else if (parts.Length >= 2)
-            {
-                field.Value = $"NamespacedKey.From(\"{parts[0]}\", \"{parts[1]}\")";
+                field.Value = $"""NamespacedKey.Vanilla("{tag.Key}")""";
             }
             else
             {
-                continue;
+                field.Value = $"""NamespacedKey.From("{tag.Namespace}", "{tag.Key}")""";
             }
 
             @class.Members.Add(field);
+
+            var file = new GeneratedCodeFile()
+            {
+                Namespace = rootNamespace,
+                Usings = ["Dawn"],
+                Symbols = [@class]
+            };
+
+            var visitor = new FileWriterVisitor();
+            visitor.Accept(file);
+
+            var fileName = $"{@class.Name}.{tag.FieldName}.g.cs";
+            context.AddSource(fileName, SourceText.From(visitor.ToString(), Encoding.UTF8));
         }
-
-        if (@class.Members.Count == 0)
-        {
-            // don't generate tags class if there are no tags.
-            return;
-        }
-
-        var file = new GeneratedCodeFile()
-        {
-            Namespace = rootNamespace,
-            Usings = ["Dawn"],
-            Symbols = [@class]
-        };
-
-        var visitor = new FileWriterVisitor();
-        visitor.Accept(file);
-
-        context.AddSource($"{@class.Name}.g.cs", SourceText.From(visitor.ToString(), Encoding.UTF8));
     }
+
+    record struct TagToGenerate(string FieldName, string Namespace, string Key);
 }
